@@ -1,15 +1,10 @@
-"""Partition synthetic null data into exactly two clusters.
+"""Partition synthetic null data into two clusters.
 
-The synthetic null constructed by `null_model.construct_null` has no real
-cluster labels (it was simulated without conditioning on any cluster
-covariate), so to compute a "null" version of the target DE p-values we first
-need some data-driven 2-way partition of the null cells. This module runs a
-standard scanpy preprocessing + Leiden pipeline, with a short bisection
-search over the `resolution` parameter to land on exactly two communities --
-the scanpy analogue of the resolution-bisection search R's
-`calcNullPval()` (ClusterDE/R/calc_null_pval.R) runs with Seurat::FindClusters.
-
-Depends only on scanpy/anndata/pandas -- no scdesigner import.
+Given a synthetic null dataset (no true clusters), we create two artificial
+clsuters to compute null DE p-values. This step implements scanpy preprocessing
++ Leiden clustering with a bisection search over the resolution parameter to
+ensure two communities are created. The approach mirrors R's `calcNullPval()`
+but uses scanpy instead of Seurat.
 """
 
 import numpy as np
@@ -25,36 +20,35 @@ def null_two_clusters(
     max_iter: int = 15,
     key_added: str = "null_cluster",
 ) -> pd.Categorical:
-    """Cluster synthetic null cells into exactly two groups via Leiden.
+    """Bipartition null cells via Leiden clustering.
 
-    Pipeline: normalize_total -> log1p -> pca(n_pcs) -> neighbors -> leiden,
-    with `resolution` bisected until exactly 2 communities are found.
+    Pipeline: normalize → log1p → PCA → neighbors → Leiden, with resolution
+    tuned via bisection to yield exactly two clusters.
 
     Parameters
     ----------
     null_adata : AnnData
         Synthetic null data (modified in place: normalized/logged counts
-        overwrite `.X`, and PCA/neighbors/Leiden results are added).
+        overwrite `.X`; PCA/neighbors/Leiden results added).
     n_pcs : int
-        Number of principal components used for the neighbor graph.
+        Principal components for neighbor graph.
     seed : int
-        Random seed for PCA, neighbors, and Leiden (deterministic given a
-        fixed seed and a fixed `resolution`).
+        Random seed (deterministic for fixed seed and resolution).
     max_iter : int
-        Maximum number of resolution values to try before giving up.
+        Maximum resolution trials before failure.
     key_added : str
-        Column name to write the final two-level cluster assignment into,
-        both in `null_adata.obs` and in the returned Categorical.
+        Column name for cluster assignments in `null_adata.obs` and return
+        value.
 
     Returns
     -------
     pd.Categorical
-        Length-n_cells categorical with exactly two levels ("0", "1").
+        Two-level categorical ("0", "1") of length n_cells.
 
     Raises
     ------
     RuntimeError
-        If no resolution within `max_iter` tries yields exactly 2 clusters.
+        If no resolution yields exactly two clusters within `max_iter` trials.
     """
     sc.pp.normalize_total(null_adata)
     sc.pp.log1p(null_adata)
@@ -72,8 +66,7 @@ def null_two_clusters(
         )
         return null_adata.obs[key_added].nunique()
 
-    # Phase 1: double `right` until it yields >= 2 clusters (mirrors R
-    # calc_null_pval.R's initial doubling loop before its bisection search).
+    # Phase 1: Double resolution until ≥2 clusters.
     right = 0.3
     n = n_clusters_at(right)
     for _ in range(max_iter):
@@ -82,11 +75,9 @@ def null_two_clusters(
         right *= 2
         n = n_clusters_at(right)
     else:
-        raise RuntimeError(
-            f"Could not reach >= 2 Leiden clusters within {max_iter} resolution doublings."
-        )
+        raise RuntimeError(f"Failed to reach ≥2 clusters within {max_iter} doublings.")
 
-    # Phase 2: bisect resolution in [left, right] until exactly 2 clusters.
+    # Phase 2: Bisection to exactly 2 clusters.
     left = 0.0
     for _ in range(max_iter):
         if n == 2:
@@ -98,10 +89,7 @@ def null_two_clusters(
         else:
             right = mid
     else:
-        raise RuntimeError(
-            f"Could not reach exactly 2 Leiden clusters within {max_iter} bisection steps "
-            f"(last resolution={right}, n_clusters={n})."
-        )
+        raise RuntimeError(f"Failed to reach exactly 2 clusters within {max_iter} steps (resolution={right}, n_clusters={n}).")
 
     labels = null_adata.obs[key_added].astype("category")
     return labels.values
